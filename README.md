@@ -31,7 +31,8 @@ Ubuntu 20.04 in order to have the OpenGL support required for the
 (Big Sur, Monterey and Venturua; Intel and M1 devices).
 
 Follow the instructions for a binary install of
-[Gazebo Garden](https://gazebosim.org/docs/garden/install) or [Gazebo Harmonic](https://gazebosim.org/docs/harmonic/install)
+[Gazebo Garden](https://gazebosim.org/docs/garden/install), [Gazebo Harmonic](https://gazebosim.org/docs/harmonic/install) or 
+[Gazebo Ionic](https://gazebosim.org/docs/ionic/install) 
 and verify that Gazebo is running correctly.
 
 Set up an [ArduPilot development environment](https://ardupilot.org/dev/index.html).
@@ -61,6 +62,16 @@ Manual - Gazebo Harmonic Dependencies:
 ```bash
 sudo apt update
 sudo apt install libgz-sim8-dev rapidjson-dev
+sudo apt install libopencv-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl
+```
+
+#### Ionic (apt)
+
+Manual - Gazebo Harmonic Dependencies:
+
+```bash
+sudo apt update
+sudo apt install libgz-sim9-dev rapidjson-dev
 sudo apt install libopencv-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl
 ```
 
@@ -127,7 +138,7 @@ Reload your terminal with `source ~/.bashrc` (or `source ~/.zshrc` on macOS).
 
 ## Usage
 
-### 1. Iris quad-copter
+### 1. Iris quad-copter (ArduPilot)
 
 #### Run Gazebo
 
@@ -156,7 +167,65 @@ GUIDED> arm throttle
 GUIDED> takeoff 5
 ```
 
-### 2. Zephyr delta wing  
+### 2. Iris quad-copter (ArduPilot)
+
+#### Run Gazebo
+
+```bash
+gz sim -v4 -r iris_runway_betaflight.sdf
+```
+
+The `-v4` parameter is not mandatory, it shows additional information and is
+useful for troubleshooting.
+
+#### Run Betaflight SITL
+
+To run a Betaflight simulation with Gazebo, you will need to build run the Betaflight Simulator. 
+
+Full guide [here] for setup, but in broad strokes,
+
+- checkout repo
+- build with target SITL
+- Start Betaflight SITL FC (`./obj/main/betaflight_SITL.elf`)
+- Connect with Betaflight configurator (Might require enabling manuall connection under Options). Connection string: `tcp://127.0.0.1:5761`
+- Configure with
+  + Additional UART (Ports -> UART2 Enable)
+  + Motor Protocol PWM (Motors -> PWM)
+  + Receiver MSP
+
+```bash
+./obj/main/betaflight_SITL.elf
+```
+
+Note that making changes will require Save and Restart between pages. This then requires the Betaflight SITL FC to be restarted. 
+
+Additionally this must be started after the simulator is already running, as an initial UDP package is sent from the FC to the Simulator that establishes the connection. This package is only sent on startup of the simulator, so connection won't be established if they start in the other order.
+
+#### Run MSP Control Interface
+
+To take controller input the HID controller input needs to be converted to an MSP signal that the Emulator can understand. This can be done using code found [here]( https://gist.github.com/cs8425/51893e2f90812aa3831558503597fa1a)
+
+To get this working you may need to update the following:
+
+- Connection URI, lines 5 & 6.
+- Joystick ID, line 144
+- Joystick Mapping, line 127 (should be AETR12)
+
+Once this is configured to your satisfaction, the emulator can be executed by entering the folder with the relevant js files and running
+
+```bash
+node emu-dx6-msp.js
+```
+
+NOTE: This must already have the SITL FC running and Controller connected before starting.
+
+#### Arm and takeoff
+
+Make use of the Betaflight Configurator to verify the controller input and motors are working. Then arm and fly! 
+
+[See below](#Streaming camera video) for details on connecting to the FPV camera stream.
+
+### 3. Zephyr delta wing  
 
 The Zephyr delta wing is positioned on the runway for vertical take-off. 
 
@@ -200,7 +269,7 @@ greater than one:
 MANUAL> param set SIM_SPEEDUP 10
 ```
 
-### 3. Streaming camera video
+### 4. Streaming camera video
 
 Images from camera sensors may be streamed with GStreamer using
 the `GstCameraPlugin` sensor plugin. The example gimbal models include the
@@ -239,7 +308,7 @@ View the streamed camera frames in [QGC](http://qgroundcontrol.com/):
 ![qgc_video_settings](https://github.com/user-attachments/assets/61fa4c2a-37e2-47cf-abcf-9f110d9c2015)
 
 
-### 4. Using 3d Gimbal
+### 5. Using 3d Gimbal
 
 The Iris model is equipped with a 3d gimbal and camera that can be controlled directly in MAVProxy using the RC overrides.
 
