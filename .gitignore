@@ -103,3 +103,6 @@ cmake-build-debug
 
 # Catkin custom files
 CATKIN_IGNORE
+
+# MacOS
+.DS_Store

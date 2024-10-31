@@ -47,16 +47,16 @@ struct servo_packet_32 {
 };
 
 // Forward declare private data class
-class ArduPilotSocketPrivate;
-class ArduPilotPluginPrivate;
+class BetaflightSocketPrivate;
+class BetaflightPluginPrivate;
 
-/// \brief Interface ArduPilot from ardupilot stack
+/// \brief Interface Betaflight from betaflight stack
 /// modeled after SITL/SIM_*
 ///
 /// The plugin requires the following parameters:
 /// <control>             control description block
-///    <!-- inputs from Ardupilot -->
-///    "channel"          attribute, ardupilot control channel
+///    <!-- inputs from Betaflight -->
+///    "channel"          attribute, betaflight control channel
 ///    <multiplier>       command multiplier
 ///    <offset>           command offset
 ///    <servo_max>        upper limit for PWM input
@@ -86,7 +86,7 @@ class ArduPilotPluginPrivate;
 ///                             controller synchronization
 /// <have_32_channels>    set true if 32 channels are enabled
 ///
-class GZ_SIM_VISIBLE ArduPilotPlugin:
+class GZ_SIM_VISIBLE BetaflightPlugin:
   public gz::sim::System,
   public gz::sim::ISystemConfigure,
   public gz::sim::ISystemPostUpdate,
@@ -94,10 +94,10 @@ class GZ_SIM_VISIBLE ArduPilotPlugin:
   public gz::sim::ISystemReset
 {
   /// \brief Constructor.
-  public: ArduPilotPlugin();
+  public: BetaflightPlugin();
 
   /// \brief Destructor.
-  public: ~ArduPilotPlugin();
+  public: ~BetaflightPlugin();
 
   public: void Reset(const UpdateInfo &_info,
                       EntityComponentManager &_ecm) final;
@@ -156,7 +156,7 @@ class GZ_SIM_VISIBLE ArduPilotPlugin:
   /// \brief Reset PID Joint controllers.
   private: void ResetPIDs();
 
-  /// \brief Receive a servo packet from ArduPilot
+  /// \brief Receive a servo packet from Betaflight
   ///
   /// Returns true if a servo packet was received, otherwise false.
   private: bool ReceiveServoPacket();
@@ -164,19 +164,24 @@ class GZ_SIM_VISIBLE ArduPilotPlugin:
   /// \brief Update the motor commands given servo PWM values
   private: void UpdateMotorCommands(const std::array<uint16_t, 32> &_pwm);
 
+  /// \brief Create the state Struct
+  private: void CreateStateStruct(
+      double _simTime,
+      const gz::sim::EntityComponentManager &_ecm) const;
+
   /// \brief Create the state JSON
   private: void CreateStateJSON(
       double _simTime,
       const gz::sim::EntityComponentManager &_ecm) const;
 
-  /// \brief Send state to ArduPilot
+  /// \brief Send state to Betaflight
   private: void SendState() const;
 
   /// \brief Initialise flight dynamics model socket
   private: bool InitSockets(sdf::ElementPtr _sdf) const;
 
   /// \brief Private data pointer.
-  private: std::unique_ptr<ArduPilotPluginPrivate> dataPtr;
+  private: std::unique_ptr<BetaflightPluginPrivate> dataPtr;
 };
 
 }  // namespace systems

@@ -14,7 +14,7 @@
  * limitations under the License.
  *
 */
-#include "ArduPilotPlugin.hh"
+#include "BetaflightPlugin.hh"
 
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
@@ -22,10 +22,8 @@
 #include <gz/msgs/imu.pb.h>
 #include <gz/msgs/laserscan.pb.h>
 
-#include <algorithm>
 #include <chrono>
 #include <functional>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <sstream>
@@ -69,15 +67,46 @@
 #define MAX_MOTORS 255
 
 // Register plugin
-GZ_ADD_PLUGIN(gz::sim::systems::ArduPilotPlugin,
+GZ_ADD_PLUGIN(gz::sim::systems::BetaflightPlugin,
               gz::sim::System,
-              gz::sim::systems::ArduPilotPlugin::ISystemConfigure,
-              gz::sim::systems::ArduPilotPlugin::ISystemPostUpdate,
-              gz::sim::systems::ArduPilotPlugin::ISystemReset,
-              gz::sim::systems::ArduPilotPlugin::ISystemPreUpdate)
+              gz::sim::systems::BetaflightPlugin::ISystemConfigure,
+              gz::sim::systems::BetaflightPlugin::ISystemPostUpdate,
+              gz::sim::systems::BetaflightPlugin::ISystemReset,
+              gz::sim::systems::BetaflightPlugin::ISystemPreUpdate)
 // Add plugin alias so that we can refer to the plugin without the version
 // namespace
-GZ_ADD_PLUGIN_ALIAS(gz::sim::systems::ArduPilotPlugin, "ArduPilotPlugin")
+GZ_ADD_PLUGIN_ALIAS(gz::sim::systems::BetaflightPlugin, "BetaflightPlugin")
+
+/// \brief Flight Dynamics Model packet that is sent back to the Betaflight
+struct fdmPacket
+{
+    /// \brief packet timestamp
+    double timestamp;
+
+    /// \brief IMU angular velocity
+    double imuAngularVelocityRPY[3];
+
+    /// \brief IMU linear acceleration
+    double imuLinearAccelerationXYZ[3];
+
+    /// \brief IMU quaternion orientation
+    double imuOrientationQuat[4];
+
+    /// \brief Model velocity in NED frame
+    double velocityXYZ[3];
+
+    /// \brief Model position in NED frame
+    double positionXYZ[3];
+
+    /// \brief Barometric Pressure (Pa)
+	double pressure;
+};
+
+struct ServoPacket
+{
+  /// \brief Motor speed data.
+  float motorSpeed[MAX_MOTORS];
+};
 
 /// \brief class Control is responsible for controlling a joint
 class Control
@@ -100,6 +129,9 @@ class Control
 
   /// \brief Next command to be applied to the joint
   public: double cmd = 0;
+
+  /// \brief Max rotor propeller RPM.
+  public: double maxRpm = 838.0;
 
   /// \brief Velocity PID for motor control
   public: gz::math::PID pid;
@@ -191,204 +223,208 @@ typedef std::shared_ptr<OnMessageWrapper<
 
 /////////////////////////////////////////////////
 // Private data class
-class gz::sim::systems::ArduPilotPluginPrivate
+class gz::sim::systems::BetaflightPluginPrivate
 {
-  /// \brief The model
-  public: gz::sim::Model model{gz::sim::kNullEntity};
+    /// \brief The model
+    public: gz::sim::Model model{gz::sim::kNullEntity};
 
-  /// \brief The entity representing the link containing the imu sensor.
-  public: gz::sim::Entity imuLink{gz::sim::kNullEntity};
+    /// \brief The entity representing the link containing the imu sensor.
+    public: gz::sim::Entity imuLink{gz::sim::kNullEntity};
 
-  /// \brief The model name;
-  public: std::string modelName;
+    /// \brief The model name;
+    public: std::string modelName;
 
-  /// \brief The world
-  public: gz::sim::World world{gz::sim::kNullEntity};
+    /// \brief The world
+    public: gz::sim::World world{gz::sim::kNullEntity};
 
-  /// \brief The world name;
-  public: std::string worldName;
+    /// \brief The world name;
+    public: std::string worldName;
 
-  /// \brief Array of controllers
-  public: std::vector<Control> controls;
+    /// \brief Array of controllers
+    public: std::vector<Control> controls;
 
-  /// \brief keep track of controller update sim-time.
-  public: std::chrono::steady_clock::duration lastControllerUpdateTime{0};
+    /// \brief keep track of controller update sim-time.
+    public: std::chrono::steady_clock::duration lastControllerUpdateTime{0};
 
-  /// \brief Keep track of the time the last servo packet was received.
-  public: std::chrono::steady_clock::duration lastServoPacketRecvTime{0};
+    /// \brief Keep track of the time the last servo packet was received.
+    public: std::chrono::steady_clock::duration lastServoPacketRecvTime{0};
 
-  /// \brief Controller update mutex.
-  public: std::mutex mutex;
+    /// \brief Controller update mutex.
+    public: std::mutex mutex;
 
-  /// \brief Socket manager
-  public: SocketUDP sock = SocketUDP(true, true);
+    /// \brief Socket manager
+    public: SocketUDP sock = SocketUDP(true, true);
 
-  /// \brief The address for the flight dynamics model (i.e. this plugin)
-  public: std::string fdm_address{"127.0.0.1"};
+    /// \brief The address for the flight dynamics model (i.e. this plugin)
+    public: std::string fdm_address{"127.0.0.1"};
 
-  /// \brief The address for the SITL flight controller - auto detected
-  public: const char* fcu_address{nullptr};
+    /// \brief The address for the SITL flight controller - auto detected
+    // public: const char* fcu_address{nullptr};
+    public: std::string fcu_address{"127.0.0.1"};
 
-  /// \brief The port for the flight dynamics model
-  public: uint16_t fdm_port_in{9002};
+    /// \brief The port for the flight dynamics model
+    public: uint16_t fdm_port_in{9003};
 
-  /// \brief The port for the SITL flight controller - auto detected
-  public: uint16_t fcu_port_out;
+    /// \brief The port for the SITL flight controller 
+    public: uint16_t fcu_port_out{9002};
 
-  /// \brief The name of the IMU sensor
-  public: std::string imuName;
+    /// \brief The name of the IMU sensor
+    public: std::string imuName;
 
-  /// \brief Set true to enforce lock-step simulation
-  public: bool isLockStep{false};
+    /// \brief Set true to enforce lock-step simulation
+    public: bool isLockStep{false};
 
-  /// \brief Set true if have 32 servo channels
-  public: bool have32Channels{false};
+    /// \brief Set true if have 32 servo channels
+    public: bool have32Channels{false};
 
-  /// \brief Have we initialized subscription to the IMU data yet?
-  public: bool imuInitialized{false};
+    /// \brief Have we initialized subscription to the IMU data yet?
+    public: bool imuInitialized{false};
 
-  /// \brief We need an gz-transport Node to subscribe to IMU data
-  public: gz::transport::Node node;
+    /// \brief We need an gz-transport Node to subscribe to IMU data
+    public: gz::transport::Node node;
 
-  /// \brief A copy of the most recently received IMU data message
-  public: gz::msgs::IMU imuMsg;
+    /// \brief A copy of the most recently received IMU data message
+    public: gz::msgs::IMU imuMsg;
 
-  /// \brief Have we received at least one IMU data message?
-  public: bool imuMsgValid{false};
+    /// \brief Have we received at least one IMU data message?
+    public: bool imuMsgValid{false};
 
-  /// \brief This mutex should be used when accessing imuMsg or imuMsgValid
-  public: std::mutex imuMsgMutex;
+    /// \brief This mutex should be used when accessing imuMsg or imuMsgValid
+    public: std::mutex imuMsgMutex;
 
-  /// \brief This subscriber callback latches the most recently received
-  ///        IMU data message for later use.
-  public: void ImuCb(const gz::msgs::IMU &_msg)
-  {
-    std::lock_guard<std::mutex> lock(this->imuMsgMutex);
-    imuMsg = _msg;
-    imuMsgValid = true;
-  }
-
-  // Range sensors
-
-  /// \brief This mutex must be used when accessing ranges
-  public: std::mutex rangeMsgMutex;
-
-  /// \brief A copy of the most recently received range data
-  public: std::vector<double> ranges;
-
-  /// \brief Callbacks for each range sensor
-  public: std::vector<RangeOnMessageWrapperPtr> rangeCbs;
-
-  /// \brief This subscriber callback latches the most recently received
-  /// data message for later use.
-  ///
-  /// \todo(anyone) using msgs::LaserScan as a proxy for msgs::SonarStamped
-  public: void RangeCb(const gz::msgs::LaserScan &_msg, int _sensorIndex)
-  {
-    // Extract data
-    double range_max = _msg.range_max();
-    auto&& ranges = _msg.ranges();
-    auto&& intensities = _msg.intensities();
-
-    // If there is no return, the range should be greater than range_max
-    double sample_min = 2.0 * range_max;
-    for (auto&& range : ranges)
+    /// \brief This subscriber callback latches the most recently received
+    ///        IMU data message for later use.
+    public: void ImuCb(const gz::msgs::IMU &_msg)
     {
-      sample_min = std::min(
-          sample_min, std::isinf(range) ? 2.0 * range_max : range);
+        std::lock_guard<std::mutex> lock(this->imuMsgMutex);
+        imuMsg = _msg;
+        imuMsgValid = true;
     }
 
-    // Aquire lock and update the range data
-    std::lock_guard<std::mutex> lock(this->rangeMsgMutex);
-    this->ranges[_sensorIndex] = sample_min;
-  }
+    // Range sensors
 
-  // Anemometer
+    /// \brief This mutex must be used when accessing ranges
+    public: std::mutex rangeMsgMutex;
 
-  /// \brief The entity representing the anemometer.
-  public: gz::sim::Entity anemometerEntity{gz::sim::kNullEntity};
+    /// \brief A copy of the most recently received range data
+    public: std::vector<double> ranges;
 
-  /// \brief The name of the anemometer.
-  public: std::string anemometerName;
+    /// \brief Callbacks for each range sensor
+    public: std::vector<RangeOnMessageWrapperPtr> rangeCbs;
 
-  /// \brief This mutex must be used when accessing the anemometer.
-  public: std::mutex anemometerMsgMutex;
+    /// \brief This subscriber callback latches the most recently received
+    /// data message for later use.
+    ///
+    /// \todo(anyone) using msgs::LaserScan as a proxy for msgs::SonarStamped
+    public: void RangeCb(const gz::msgs::LaserScan &_msg, int _sensorIndex)
+    {
+        // Extract data
+        double range_max = _msg.range_max();
+        auto&& ranges = _msg.ranges();
+        auto&& intensities = _msg.intensities();
 
-  /// \brief Have we initialized subscription to the anemometer data yet?
-  public: bool anemometerInitialized{false};
+        // If there is no return, the range should be greater than range_max
+        double sample_min = 2.0 * range_max;
+        for (auto&& range : ranges)
+        {
+        sample_min = std::min(
+            sample_min, std::isinf(range) ? 2.0 * range_max : range);
+        }
 
-  /// \brief A copy of the most recently received apparent wind message.
-  public: gz::msgs::Vector3d anemometerMsg;
+        // Aquire lock and update the range data
+        std::lock_guard<std::mutex> lock(this->rangeMsgMutex);
+        this->ranges[_sensorIndex] = sample_min;
+    }
 
-  /// \brief Callback for the anemometer.
-  public: void AnemometerCb(const gz::msgs::Vector3d &_msg)
-  {
-    std::lock_guard<std::mutex> lock(this->anemometerMsgMutex);
-    anemometerMsg = _msg;
-  }
+    // Anemometer
 
-  /// \brief Pointer to an GPS sensor [optional]
-  //  public: sensors::GpsSensorPtr gpsSensor;
+    /// \brief The entity representing the anemometer.
+    public: gz::sim::Entity anemometerEntity{gz::sim::kNullEntity};
 
-  /// \brief Pointer to an Rangefinder sensor [optional]
-  //  public: sensors::RaySensorPtr rangefinderSensor;
+    /// \brief The name of the anemometer.
+    public: std::string anemometerName;
 
-  /// \brief Set to true when the ArduPilot flight controller is online
-  ///
-  /// Set to false when Gazebo starts to prevent blocking, true when
-  /// the ArduPilot controller is detected and online, and false if the
-  /// connection to the ArduPilot controller times out.
-  public: bool arduPilotOnline{false};
+    /// \brief This mutex must be used when accessing the anemometer.
+    public: std::mutex anemometerMsgMutex;
 
-  /// \brief Number of consecutive missed ArduPilot controller messages
-  public: int connectionTimeoutCount{0};
+    /// \brief Have we initialized subscription to the anemometer data yet?
+    public: bool anemometerInitialized{false};
 
-  /// \brief Max number of consecutive missed ArduPilot controller
-  ///        messages before timeout
-  public: int connectionTimeoutMaxCount;
+    /// \brief A copy of the most recently received apparent wind message.
+    public: gz::msgs::Vector3d anemometerMsg;
 
-  /// \brief Transform from model orientation to x-forward and z-up
-  public: gz::math::Pose3d modelXYZToAirplaneXForwardZDown;
+    /// \brief Callback for the anemometer.
+    public: void AnemometerCb(const gz::msgs::Vector3d &_msg)
+    {
+        std::lock_guard<std::mutex> lock(this->anemometerMsgMutex);
+        anemometerMsg = _msg;
+    }
 
-  /// \brief Transform from world frame to NED frame
-  public: gz::math::Pose3d gazeboXYZToNED;
+    /// \brief Pointer to an GPS sensor [optional]
+    //  public: sensors::GpsSensorPtr gpsSensor;
 
-  /// \brief Last received frame rate from the ArduPilot controller
-  public: uint16_t fcu_frame_rate;
+    /// \brief Pointer to an Rangefinder sensor [optional]
+    //  public: sensors::RaySensorPtr rangefinderSensor;
 
-  /// \brief Last received frame count from the ArduPilot controller
-  public: uint32_t fcu_frame_count = -1;
+    /// \brief Set to true when the Betaflight flight controller is online
+    ///
+    /// Set to false when Gazebo starts to prevent blocking, true when
+    /// the Betaflight controller is detected and online, and false if the
+    /// connection to the Betaflight controller times out.
+    public: bool betaflightOnline{false};
 
-  /// \brief Last sent JSON string, so we can resend if needed.
-  public: std::string json_str;
+    /// \brief Number of consecutive missed Betaflight controller messages
+    public: int connectionTimeoutCount{0};
 
-  /// \brief A copy of the most recently received signal.
-  public: int signal{0};
+    /// \brief Max number of consecutive missed Betaflight controller
+    ///        messages before timeout
+    public: int connectionTimeoutMaxCount;
 
-  /// \brief Signal handler.
-  public: gz::common::SignalHandler sigHandler;
+    /// \brief Transform from model orientation to x-forward and z-up
+    public: gz::math::Pose3d modelXYZToAirplaneXForwardZDown;
 
-  /// \brief Signal handler callback.
-  public: void OnSignal(int _sig)
-  {
-      gzdbg << "Plugin received signal[" << _sig  << "]\n";
-      this->signal = _sig;
-  }
+    /// \brief Transform from world frame to NED frame
+    public: gz::math::Pose3d gazeboXYZToNED;
+
+    /// \brief Last received frame rate from the Betaflight controller
+    public: uint16_t fcu_frame_rate;
+
+    /// \brief Last received frame count from the Betaflight controller
+    public: uint32_t fcu_frame_count = -1;
+
+    /// \brief Last sent JSON string, so we can resend if needed.
+    public: std::string json_str;
+
+    /// \brief Last sent enviromnent packet struct, so we can sent it.
+    public: fdmPacket framePacket;
+
+    /// \brief A copy of the most recently received signal.
+    public: int signal{0};
+
+    /// \brief Signal handler.
+    public: gz::common::SignalHandler sigHandler;
+
+    /// \brief Signal handler callback.
+    public: void OnSignal(int _sig)
+    {
+        gzdbg << "Plugin received signal[" << _sig  << "]\n";
+        this->signal = _sig;
+    }
 };
 
 /////////////////////////////////////////////////
-gz::sim::systems::ArduPilotPlugin::ArduPilotPlugin()
-  : dataPtr(new ArduPilotPluginPrivate())
+gz::sim::systems::BetaflightPlugin::BetaflightPlugin()
+  : dataPtr(new BetaflightPluginPrivate())
 {
 }
 
 /////////////////////////////////////////////////
-gz::sim::systems::ArduPilotPlugin::~ArduPilotPlugin()
+gz::sim::systems::BetaflightPlugin::~BetaflightPlugin()
 {
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::Reset(const UpdateInfo &_info,
+void gz::sim::systems::BetaflightPlugin::Reset(const UpdateInfo &_info,
                                               EntityComponentManager &_ecm)
 {
   if (!_ecm.EntityHasComponentType(this->dataPtr->imuLink,
@@ -434,7 +470,7 @@ void gz::sim::systems::ArduPilotPlugin::Reset(const UpdateInfo &_info,
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::Configure(
+void gz::sim::systems::BetaflightPlugin::Configure(
     const gz::sim::Entity &_entity,
     const std::shared_ptr<const sdf::Element> &_sdf,
     gz::sim::EntityComponentManager &_ecm,
@@ -446,7 +482,7 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
   this->dataPtr->model = gz::sim::Model(_entity);
   if (!this->dataPtr->model.Valid(_ecm))
   {
-    gzerr << "ArduPilotPlugin should be attached to a model "
+    gzerr << "BetaflightPlugin should be attached to a model "
       << "entity. Failed to initialize." << "\n";
     return;
   }
@@ -499,7 +535,7 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
     return;
   }
 
-  // Missed update count before we declare arduPilotOnline status false
+  // Missed update count before we declare betaflightOnline status false
   this->dataPtr->connectionTimeoutMaxCount =
     sdfClone->Get("connectionTimeoutMaxCount", 10).first;
 
@@ -513,16 +549,16 @@ void gz::sim::systems::ArduPilotPlugin::Configure(
   // Add the signal handler
   this->dataPtr->sigHandler.AddCallback(
       std::bind(
-        &gz::sim::systems::ArduPilotPluginPrivate::OnSignal,
+        &gz::sim::systems::BetaflightPluginPrivate::OnSignal,
         this->dataPtr.get(),
         std::placeholders::_1));
 
   gzlog << "[" << this->dataPtr->modelName << "] "
-        << "ArduPilot ready to fly. The force will be with you" << "\n";
+        << "Betaflight ready to fly. The force will be with you" << "\n";
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::LoadControlChannels(
+void gz::sim::systems::BetaflightPlugin::LoadControlChannels(
     sdf::ElementPtr _sdf,
     gz::sim::EntityComponentManager &_ecm)
 {
@@ -794,7 +830,7 @@ void gz::sim::systems::ArduPilotPlugin::LoadControlChannels(
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::LoadImuSensors(
+void gz::sim::systems::BetaflightPlugin::LoadImuSensors(
     sdf::ElementPtr _sdf,
     gz::sim::EntityComponentManager &/*_ecm*/)
 {
@@ -803,7 +839,7 @@ void gz::sim::systems::ArduPilotPlugin::LoadImuSensors(
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::LoadGpsSensors(
+void gz::sim::systems::BetaflightPlugin::LoadGpsSensors(
     sdf::ElementPtr /*_sdf*/,
     gz::sim::EntityComponentManager &/*_ecm*/)
 {
@@ -876,7 +912,7 @@ void gz::sim::systems::ArduPilotPlugin::LoadGpsSensors(
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::LoadRangeSensors(
+void gz::sim::systems::BetaflightPlugin::LoadRangeSensors(
     sdf::ElementPtr _sdf,
     gz::sim::EntityComponentManager &/*_ecm*/)
 {
@@ -965,7 +1001,7 @@ void gz::sim::systems::ArduPilotPlugin::LoadRangeSensors(
         // (adjust from unit to zero offset)
         OnMessageWrapper<gz::msgs::LaserScan>::callback_t fn =
             std::bind(
-                &gz::sim::systems::ArduPilotPluginPrivate::RangeCb,
+                &gz::sim::systems::BetaflightPluginPrivate::RangeCb,
                 this->dataPtr.get(),
                 std::placeholders::_1,
                 sensorId.index - 1);
@@ -992,7 +1028,7 @@ void gz::sim::systems::ArduPilotPlugin::LoadRangeSensors(
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::LoadWindSensors(
+void gz::sim::systems::BetaflightPlugin::LoadWindSensors(
     sdf::ElementPtr _sdf,
     gz::sim::EntityComponentManager &/*_ecm*/)
 {
@@ -1001,7 +1037,7 @@ void gz::sim::systems::ArduPilotPlugin::LoadWindSensors(
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::PreUpdate(
+void gz::sim::systems::BetaflightPlugin::PreUpdate(
     const gz::sim::UpdateInfo &_info,
     gz::sim::EntityComponentManager &_ecm)
 {
@@ -1074,12 +1110,12 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
         {
             gzerr << "[" << this->dataPtr->modelName << "] "
                   << "anemometer [" << this->dataPtr->anemometerName
-                  << "] not found, abort ArduPilot plugin." << "\n";
+                  << "] not found, abort Betaflight plugin." << "\n";
             return;
         }
 
         this->dataPtr->node.Subscribe(anemometerTopicName,
-            &gz::sim::systems::ArduPilotPluginPrivate::AnemometerCb,
+            &gz::sim::systems::BetaflightPluginPrivate::AnemometerCb,
             this->dataPtr.get());
 
         // Make sure that the anemometer entity has WorldPose
@@ -1106,7 +1142,7 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
         // Extract the following:
         //  - Sensor topic name: to subscribe to the imu data
         //  - Link containing the sensor: to get the pose to transform to
-        //    the correct frame for ArduPilot
+        //    the correct frame for Betaflight
 
         // try scoped names first
         auto entities = entitiesFromScopedName(
@@ -1170,12 +1206,12 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
         {
             gzerr << "[" << this->dataPtr->modelName << "] "
                   << "imu_sensor [" << this->dataPtr->imuName
-                  << "] not found, abort ArduPilot plugin." << "\n";
+                  << "] not found, abort Betaflight plugin." << "\n";
             return;
         }
 
         this->dataPtr->node.Subscribe(imuTopicName,
-            &gz::sim::systems::ArduPilotPluginPrivate::ImuCb,
+            &gz::sim::systems::BetaflightPluginPrivate::ImuCb,
             this->dataPtr.get());
 
         // Make sure that the 'imuLink' entity has WorldPose
@@ -1194,7 +1230,7 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
             if (this->dataPtr->isLockStep)
             {
                 while (!this->ReceiveServoPacket() &&
-                    this->dataPtr->arduPilotOnline)
+                    this->dataPtr->betaflightOnline)
                 {
                     // SIGNINT should interrupt this loop.
                     if (this->dataPtr->signal != 0)
@@ -1209,7 +1245,7 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
                 this->dataPtr->lastServoPacketRecvTime = _info.simTime;
             }
 
-            if (this->dataPtr->arduPilotOnline)
+            if (this->dataPtr->betaflightOnline)
             {
                 double dt =
                     std::chrono::duration_cast<std::chrono::duration<double> >(
@@ -1222,7 +1258,7 @@ void gz::sim::systems::ArduPilotPlugin::PreUpdate(
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::PostUpdate(
+void gz::sim::systems::BetaflightPlugin::PostUpdate(
     const gz::sim::UpdateInfo &_info,
     const gz::sim::EntityComponentManager &_ecm)
 {
@@ -1230,19 +1266,19 @@ void gz::sim::systems::ArduPilotPlugin::PostUpdate(
 
     // Publish the new state.
     if (!_info.paused && _info.simTime > this->dataPtr->lastControllerUpdateTime
-        && this->dataPtr->arduPilotOnline)
+        && this->dataPtr->betaflightOnline)
     {
         double t =
             std::chrono::duration_cast<std::chrono::duration<double>>(
                 _info.simTime).count();
-        this->CreateStateJSON(t, _ecm);
+        this->CreateStateStruct(t, _ecm);
         this->SendState();
         this->dataPtr->lastControllerUpdateTime = _info.simTime;
     }
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::ResetPIDs()
+void gz::sim::systems::BetaflightPlugin::ResetPIDs()
 {
   // Reset velocity PID for controls
   for (size_t i = 0; i < this->dataPtr->controls.size(); ++i)
@@ -1253,7 +1289,7 @@ void gz::sim::systems::ArduPilotPlugin::ResetPIDs()
 }
 
 /////////////////////////////////////////////////
-bool gz::sim::systems::ArduPilotPlugin::InitSockets(sdf::ElementPtr _sdf) const
+bool gz::sim::systems::BetaflightPlugin::InitSockets(sdf::ElementPtr _sdf) const
 {
     // get the fdm address if provided, otherwise default to localhost
     this->dataPtr->fdm_address =
@@ -1286,11 +1322,23 @@ bool gz::sim::systems::ArduPilotPlugin::InitSockets(sdf::ElementPtr _sdf) const
         << "flight dynamics model @ "
         << this->dataPtr->fdm_address << ":" << this->dataPtr->fdm_port_in
         << "\n";
+
+    this->dataPtr->fcu_address =
+        _sdf->Get("fcu_address", static_cast<std::string>("127.0.0.1")).first;
+ 
+    this->dataPtr->fcu_port_out =
+        _sdf->Get("fcu_port_out", static_cast<uint32_t>(9002)).first;
+ 
+    gzdbg << "After _sdf.Get: fcu_address [ " 
+        << this->dataPtr->fcu_address << " ] "
+        << " fcu_port_out [ " << this->dataPtr->fcu_port_out << " ] "
+        << "\n";
+
     return true;
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::ApplyMotorForces(
+void gz::sim::systems::BetaflightPlugin::ApplyMotorForces(
     const double _dt,
     gz::sim::EntityComponentManager &_ecm)
 {
@@ -1413,9 +1461,25 @@ ssize_t getServoPacket(
   TServoPacket &_pkt
 )
 {
-    ssize_t recvSize = _sock.recv(&_pkt, sizeof(TServoPacket), _waitMs);
 
-    _sock.get_client_address(_fcu_address, _fcu_port_out);
+    // gzdbg << "Before SocketUDP.recv: fcu_address [ " << _fcu_address << " ] "
+    //     << "fcu_port_out [ " << _fcu_port_out << " ] "
+    //     << "\n"; 
+
+    ssize_t recvSize = _sock.recv(&_pkt, sizeof(TServoPacket), _waitMs);
+    
+    
+    // gzdbg << "After SocketUDP.recv: fcu_address [ " 
+    //     << _fcu_address << " ] "
+    //     << "fcu_port_out [ " << _fcu_port_out << " ] "
+    //     << "\n";
+
+    // _sock.get_client_address(_fcu_address, _fcu_port_out);
+
+    // gzdbg << "After SocketUDP.get_client_address : fcu_address [ " 
+    //     << _fcu_address << " ] "
+    //     << "fcu_port_out [ " << _fcu_port_out << " ] "
+    //     << "\n";
 
     // drain the socket in the case we're backed up
     int counter = 0;
@@ -1441,24 +1505,15 @@ ssize_t getServoPacket(
 }  // namespace
 
 /////////////////////////////////////////////////
-bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
+bool gz::sim::systems::BetaflightPlugin::ReceiveServoPacket()
 {
-    // Added detection for whether ArduPilot is online or not.
-    // If ArduPilot is detected (receive of fdm packet from someone),
-    // then socket receive wait time is increased from 1ms to 1 sec
-    // to accomodate network jitter.
-    // If ArduPilot is not detected, receive call blocks for 1ms
-    // on each call.
-    // Once ArduPilot presence is detected, it takes this many
-    // missed receives before declaring the FCS offline.
-
-    uint32_t waitMs;
-    if (this->dataPtr->arduPilotOnline)
+    ServoPacket pkt;
+    int waitMs = 1;
+    if (this->dataPtr->betaflightOnline)
     {
-        // Increase timeout for recv once we detect a packet from ArduPilot FCS.
-        // If this value is too high then it will block the main Gazebo
-        // update loop and adversely affect the RTF.
-        waitMs = 10;
+        // increase timeout for receive once we detect a packet from
+        // Betaflight FCS.
+        waitMs = 100;
     }
     else
     {
@@ -1466,159 +1521,80 @@ bool gz::sim::systems::ArduPilotPlugin::ReceiveServoPacket()
         waitMs = 1;
     }
 
-    // 16 / 32 channel compatibility
-    uint16_t pkt_magic{0};
-    uint16_t pkt_frame_rate{0};
-    uint16_t pkt_frame_count{0};
-    std::array<uint16_t, 32> pkt_pwm;
-    ssize_t recvSize{-1};
-    if (this->dataPtr->have32Channels)
+    // Declare a temporary const char* pointing to the string data
+    const char *temp_address = this->dataPtr->fcu_address.c_str();
+
+    ssize_t recvSize = getServoPacket(
+            this->dataPtr->sock,
+            temp_address,
+            this->dataPtr->fcu_port_out,
+            waitMs,
+            this->dataPtr->modelName,
+            pkt);
+    // ssize_t recvSize = this->dataPtr->Recv(&pkt, sizeof(ServoPacket), waitMs);
+    ssize_t expectedPktSize =
+            sizeof(pkt.motorSpeed[0])*this->dataPtr->controls.size();
+
+
+    if ((recvSize == -1) || (recvSize < expectedPktSize))
     {
-      servo_packet_32 pkt;
-      recvSize = getServoPacket(
-          this->dataPtr->sock,
-          this->dataPtr->fcu_address,
-          this->dataPtr->fcu_port_out,
-          waitMs,
-          this->dataPtr->modelName,
-          pkt);
-      pkt_magic = pkt.magic;
-      pkt_frame_rate = pkt.frame_rate;
-      pkt_frame_count = pkt.frame_count;
-      std::copy(std::begin(pkt.pwm), std::end(pkt.pwm), std::begin(pkt_pwm));
+        // didn't receive a packet
+        // gzerr << "no packet\n";
+        if (recvSize != -1)
+        {
+            gzerr << "received bit size (" << recvSize << ") to small,"
+                    << " controller expected size (" << expectedPktSize << ").\n";
+        }
+
+        if (this->dataPtr->betaflightOnline)
+        {
+            gzwarn << "Broken Betaflight connection, count ["
+                    << this->dataPtr->connectionTimeoutCount
+                    << "/" << this->dataPtr->connectionTimeoutMaxCount
+                    << "]\n";
+            if (++this->dataPtr->connectionTimeoutCount >
+                    this->dataPtr->connectionTimeoutMaxCount)
+            {
+                this->dataPtr->connectionTimeoutCount = 0;
+                this->dataPtr->betaflightOnline = false;
+                gzwarn << "Broken Betaflight connection, resetting motor control.\n";
+                this->ResetPIDs();
+                return false;
+            }
+        }
     }
     else
     {
-      servo_packet_16 pkt;
-      recvSize = getServoPacket(
-          this->dataPtr->sock,
-          this->dataPtr->fcu_address,
-          this->dataPtr->fcu_port_out,
-          waitMs,
-          this->dataPtr->modelName,
-          pkt);
-      pkt_magic = pkt.magic;
-      pkt_frame_rate = pkt.frame_rate;
-      pkt_frame_count = pkt.frame_count;
-      std::copy(std::begin(pkt.pwm), std::end(pkt.pwm), std::begin(pkt_pwm));
-    }
-
-    // didn't receive a packet, increment timeout count if online, then return
-    if (recvSize == -1)
-    {
-        if (this->dataPtr->arduPilotOnline)
+        if (!this->dataPtr->betaflightOnline)
         {
-            if (++this->dataPtr->connectionTimeoutCount >
-            this->dataPtr->connectionTimeoutMaxCount)
-            {
-                this->dataPtr->connectionTimeoutCount = 0;
+            gzdbg << "Betaflight controller online detected.\n";
+            // made connection, set some flags
+            this->dataPtr->connectionTimeoutCount = 0;
+            this->dataPtr->betaflightOnline = true;
+        }
 
-                // for lock-step resend last state rather than time out
-                if (this->dataPtr->isLockStep)
-                {
-                    this->SendState();
-                }
-                else
-                {
-                    this->dataPtr->arduPilotOnline = false;
-                    gzwarn << "[" << this->dataPtr->modelName << "] "
-                        << "Broken ArduPilot connection,"
-                        << " resetting motor control.\n";
-                    this->ResetPIDs();
-                }
+        // compute command based on requested motorSpeed
+        for (unsigned i = 0; i < this->dataPtr->controls.size(); ++i)
+        {
+            if (i < MAX_MOTORS)
+            {
+                // std::cout << i << ": " << pkt.motorSpeed[i] << "\n";
+                this->dataPtr->controls[i].cmd = this->dataPtr->controls[i].maxRpm *
+                        pkt.motorSpeed[i];
+            }
+            else
+            {
+                gzerr << "too many motors, skipping [" << i
+                        << " > " << MAX_MOTORS << "].\n";
             }
         }
-        return false;
     }
-
-#if DEBUG_JSON_IO
-    int max_servo_channels = this->dataPtr->have32Channels ? 32 : 16;
-
-    // debug: inspect sitl packet
-    std::ostringstream oss;
-    oss << "recv " << recvSize << " bytes from "
-        << this->dataPtr->fcu_address << ":"
-        << this->dataPtr->fcu_port_out << "\n";
-    // oss << "magic: " << pkt_magic << "\n";
-    // oss << "frame_rate: " << pkt_frame_rate << "\n";
-    oss << "frame_count: " << pkt_frame_count << "\n";
-    // oss << "pwm: [";
-    // for (auto i=0; i<max_servo_channels - 1; ++i) {
-    //     oss << pkt_pwm[i] << ", ";
-    // }
-    // oss << pkt_pwm[max_servo_channels - 1] << "]\n";
-    gzdbg << "\n" << oss.str();
-#endif
-
-    // check magic, return if invalid
-    constexpr uint16_t magic_16 = 18458;
-    constexpr uint16_t magic_32 = 29569;
-    uint16_t magic = this->dataPtr->have32Channels ? magic_32 : magic_16;
-    if (magic != pkt_magic)
-    {
-        gzwarn << "Incorrect protocol magic "
-            << pkt_magic << " should be "
-            << magic << "\n";
-        return false;
-    }
-
-    // the controller is online
-    if (!this->dataPtr->arduPilotOnline)
-    {
-        this->dataPtr->arduPilotOnline = true;
-
-        gzlog << "[" << this->dataPtr->modelName << "] "
-            << "Connected to ArduPilot controller @ "
-            << this->dataPtr->fcu_address << ":" << this->dataPtr->fcu_port_out
-            << "\n";
-    }
-
-    // update frame rate
-    this->dataPtr->fcu_frame_rate = pkt_frame_rate;
-
-    // check for controller reset
-    if (pkt_frame_count < this->dataPtr->fcu_frame_count)
-    {
-        /// \todo(anyone) implement re-initialisation
-        gzwarn << "ArduPilot controller has reset\n";
-    }
-
-    // check for duplicate frame
-    else if (pkt_frame_count == this->dataPtr->fcu_frame_count)
-    {
-        gzwarn << "Duplicate input frame\n";
-
-        // for lock-step resend last state rather than ignore
-        if (this->dataPtr->isLockStep)
-        {
-            this->SendState();
-        }
-
-        return false;
-    }
-
-    // check for skipped frames
-    else if (pkt_frame_count != this->dataPtr->fcu_frame_count + 1
-        && this->dataPtr->arduPilotOnline)
-    {
-        gzwarn << "Missed "
-            << pkt_frame_count - this->dataPtr->fcu_frame_count
-            << " input frames\n";
-    }
-
-    // update frame count
-    this->dataPtr->fcu_frame_count = pkt_frame_count;
-
-    // reset the connection timeout so we don't accumulate
-    this->dataPtr->connectionTimeoutCount = 0;
-
-    this->UpdateMotorCommands(pkt_pwm);
 
     return true;
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::UpdateMotorCommands(
+void gz::sim::systems::BetaflightPlugin::UpdateMotorCommands(
     const std::array<uint16_t, 32> &_pwm)
 {
     int max_servo_channels = this->dataPtr->have32Channels ? 32 : 16;
@@ -1676,8 +1652,118 @@ void gz::sim::systems::ArduPilotPlugin::UpdateMotorCommands(
     }
 }
 
+void gz::sim::systems::BetaflightPlugin::CreateStateStruct(
+    double _simTime,
+    const gz::sim::EntityComponentManager &_ecm) const
+{
+    fdmPacket pkt; 
+
+    pkt.timestamp = _simTime;
+    // Make a local copy of the latest IMU data (it's filled in
+    // on receipt by ImuCb()).
+    gz::msgs::IMU imuMsg;
+    {
+        std::lock_guard<std::mutex> lock(this->dataPtr->imuMsgMutex);
+        // Wait until we've received a valid message.
+        if (!this->dataPtr->imuMsgValid)
+        {
+            return;
+        }
+        imuMsg = this->dataPtr->imuMsg;
+    }
+
+    // it is assumed that the imu orientation conforms to the
+    // aircraft convention:
+    //   x-forward
+    //   y-right
+    //   z-down
+
+    // get linear acceleration
+    gz::math::Vector3d linearAccel{
+        imuMsg.linear_acceleration().x(),
+        imuMsg.linear_acceleration().y(),
+        imuMsg.linear_acceleration().z()
+    };
+
+    pkt.imuLinearAccelerationXYZ[0] = linearAccel.X();
+    pkt.imuLinearAccelerationXYZ[1] = linearAccel.Y();
+    pkt.imuLinearAccelerationXYZ[2] = linearAccel.Z();
+
+    // get angular velocity
+    gz::math::Vector3d angularVel{
+        imuMsg.angular_velocity().x(),
+        imuMsg.angular_velocity().y(),
+        imuMsg.angular_velocity().z(),
+    };
+    
+    pkt.imuAngularVelocityRPY[0] = angularVel.X();
+    pkt.imuAngularVelocityRPY[1] = angularVel.Y();
+    pkt.imuAngularVelocityRPY[2] = angularVel.Z();
+        // get pose and velocity in Gazebo world frame
+    const gz::sim::components::WorldPose* worldPose =
+        _ecm.Component<gz::sim::components::WorldPose>(
+            this->dataPtr->imuLink);
+
+    const gz::sim::components::WorldLinearVelocity* worldLinearVel =
+        _ecm.Component<gz::sim::components::WorldLinearVelocity>(
+            this->dataPtr->imuLink);
+
+    // position and orientation transform (Aircraft world to Aircraft body)
+    gz::math::Pose3d bdyAToBdyG =
+        this->dataPtr->modelXYZToAirplaneXForwardZDown.Inverse();
+
+    /// \todo(srmainwaring) check for error.
+    /// The inverse may be incorrect. The error is not evident when using
+    /// the transform from the original plugin:
+    ///   <gazeboXYZToNED>0 0 0 GZ_PI 0 0</gazeboXYZToNED>
+    /// but is when using the correct transform which is
+    ///   <gazeboXYZToNED>0 0 0 GZ_PI 0 GZ_PI/2</gazeboXYZToNED>
+    ///
+    gz::math::Pose3d wldAToWldG = this->dataPtr->gazeboXYZToNED.Inverse();
+    // gz::math::Pose3d wldAToWldG = this->dataPtr->gazeboXYZToNED;
+
+    gz::math::Pose3d wldGToBdyG = worldPose->Data();
+    gz::math::Pose3d wldAToBdyA =
+        wldAToWldG * wldGToBdyG * bdyAToBdyG.Inverse();
+
+    pkt.positionXYZ[0] = wldAToBdyA.Pos().X();
+    pkt.positionXYZ[1] = wldAToBdyA.Pos().Y();
+    pkt.positionXYZ[2] = wldAToBdyA.Pos().Z();
+
+    pkt.imuOrientationQuat[0] = wldAToBdyA.Rot().W();
+    pkt.imuOrientationQuat[1] = wldAToBdyA.Rot().X();
+    pkt.imuOrientationQuat[2] = wldAToBdyA.Rot().Y();
+    pkt.imuOrientationQuat[3] = wldAToBdyA.Rot().Z();
+
+    // velocity transformation
+    gz::math::Vector3d velWldG = worldLinearVel->Data();
+    gz::math::Vector3d velWldA = wldAToWldG.Rot() * velWldG + wldAToWldG.Pos();
+
+    pkt.velocityXYZ[0] = velWldA.X();
+    pkt.velocityXYZ[1] = velWldA.Y();
+    pkt.velocityXYZ[2] = velWldA.Z();
+
+    // Emulate ESC Sensor
+    pkt.pressure = 101325;
+
+    // for (size_t i = 0; i < this->dataPtr->controls.size(); ++i)
+    // {
+    //     //Angular velocity is returned in rad/s
+    //     auto jointVelocityOpt = _ecm.ComponentData<gz::sim::components::JointVelocity>(
+    //         this->dataPtr->controls[i].joint);
+
+    //     if (jointVelocityOpt && !jointVelocityOpt->empty()) {
+    //         pkt.escRpm[i] = jointVelocityOpt->at(0);  // Convert rad/s to RPM if needed
+    //     } else {
+    //         pkt.escRpm[i] = 0.0;  // Or handle missing data as appropriate
+    //     }
+    // }
+
+    this->dataPtr->framePacket = pkt;
+}
+
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
+void gz::sim::systems::BetaflightPlugin::CreateStateJSON(
     double _simTime,
     const gz::sim::EntityComponentManager &_ecm) const
 {
@@ -1980,15 +2066,25 @@ void gz::sim::systems::ArduPilotPlugin::CreateStateJSON(
 }
 
 /////////////////////////////////////////////////
-void gz::sim::systems::ArduPilotPlugin::SendState() const
+void gz::sim::systems::BetaflightPlugin::SendState() const
 {
 #if DEBUG_JSON_IO
     auto bytes_sent =
 #endif
+    fdmPacket pkt = this->dataPtr->framePacket;
+
+    // gzdbg << "fdmPacket data ["
+    //                 << pkt.pressure
+    //                 << "] fcu_port_out ["
+    //                 << this->dataPtr->fcu_port_out
+    //                 << "]\n";
+
+    const char *temp_address = this->dataPtr->fcu_address.c_str();
+
     this->dataPtr->sock.sendto(
-        this->dataPtr->json_str.c_str(),
-        this->dataPtr->json_str.size(),
-        this->dataPtr->fcu_address,
+        reinterpret_cast<const char*>(&pkt),
+        sizeof(pkt),
+        temp_address,
         this->dataPtr->fcu_port_out);
 
 #if DEBUG_JSON_IO
