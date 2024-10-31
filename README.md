@@ -7,7 +7,7 @@
 This is a fork of the official ArduPilot plugin for [Gazebo](https://gazebosim.org/home), to add support for the [Betaflight SITL](https://betaflight.com/docs/development/sitl) implementation.
 It replaces the previous
 [`ardupilot_gazebo`](https://github.com/khancyr/ardupilot_gazebo)
-plugin and provides support for the recent releases of the Gazebo simulator
+plugin and provides support for the recent releases of the Gazebo simulator [(Gazebo Ionic)](https://gazebosim.org/docs/ionic/install/), 
 [(Gazebo Garden)](https://gazebosim.org/docs/garden/install) and [(Gazebo Harmonic)](https://gazebosim.org/docs/harmonic/install).
 
 It also adds the following features:
