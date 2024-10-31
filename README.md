@@ -4,7 +4,7 @@
 [![ccplint](https://github.com/ArduPilot/ardupilot_gazebo/actions/workflows/ccplint.yml/badge.svg)](https://github.com/ArduPilot/ardupilot_gazebo/actions/workflows/ccplint.yml)
 [![cppcheck](https://github.com/ArduPilot/ardupilot_gazebo/actions/workflows/ccpcheck.yml/badge.svg)](https://github.com/ArduPilot/ardupilot_gazebo/actions/workflows/ccpcheck.yml)
 
-This is the official ArduPilot plugin for [Gazebo](https://gazebosim.org/home).
+This is a fork of the official ArduPilot plugin for [Gazebo](https://gazebosim.org/home), to add support for the [Betaflight SITL](https://betaflight.com/docs/development/sitl) implementation.
 It replaces the previous
 [`ardupilot_gazebo`](https://github.com/khancyr/ardupilot_gazebo)
 plugin and provides support for the recent releases of the Gazebo simulator
@@ -23,7 +23,7 @@ The project comprises a Gazebo plugin to connect to ArduPilot SITL
 
 ## Prerequisites
 
-Gazebo Garden or Harmonic is supported on Ubuntu 22.04 (Jammy).
+Gazebo Ionic, Garden or Harmonic is supported on Ubuntu 22.04 (Jammy).
 Harmonic is recommended.
 If you are running Ubuntu as a virtual machine you will need at least
 Ubuntu 20.04 in order to have the OpenGL support required for the
