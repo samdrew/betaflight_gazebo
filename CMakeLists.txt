@@ -17,8 +17,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # --------------------------------------------------------------------------- #
 # Find gz-sim and dependencies.
 
-# Harmonic (default)
-if("$ENV{GZ_VERSION}" STREQUAL "harmonic" OR NOT DEFINED "ENV{GZ_VERSION}")
+# Ionic (default)
+if("$ENV{GZ_VERSION}" STREQUAL "ionic" OR NOT DEFINED "ENV{GZ_VERSION}")
+  find_package(gz-cmake4 REQUIRED)
+  set(GZ_CMAKE_VER ${gz-cmake4_VERSION_MAJOR})
+
+  gz_find_package(gz-common6 REQUIRED)
+  set(GZ_COMMON_VER ${gz-common6_VERSION_MAJOR})
+
+  gz_find_package(gz-rendering9 REQUIRED)
+  set(GZ_RENDERING_VER ${gz-rendering9_VERSION_MAJOR})
+
+  gz_find_package(gz-sim9 REQUIRED)
+  set(GZ_SIM_VER ${gz-sim9_VERSION_MAJOR})
+
+  message(STATUS "Compiling against Gazebo Harmonic")
+# Harmonic
+elseif("$ENV{GZ_VERSION}" STREQUAL "harmonic")
   find_package(gz-cmake3 REQUIRED)
   set(GZ_CMAKE_VER ${gz-cmake3_VERSION_MAJOR})
 
@@ -74,6 +89,19 @@ target_link_libraries(ArduPilotPlugin PRIVATE
   gz-sim${GZ_SIM_VER}::gz-sim${GZ_SIM_VER}
 )
 
+add_library(BetaflightPlugin
+    SHARED
+    src/BetaflightPlugin.cc
+    src/SocketUDP.cc
+    src/Util.cc
+)
+target_include_directories(BetaflightPlugin PRIVATE
+  include
+)
+target_link_libraries(BetaflightPlugin PRIVATE
+  gz-sim${GZ_SIM_VER}::gz-sim${GZ_SIM_VER}
+)
+
 add_library(ParachutePlugin
   SHARED
   src/ParachutePlugin.cc
@@ -119,6 +147,7 @@ target_link_libraries(GstCameraPlugin PRIVATE
 install(
   TARGETS
   ArduPilotPlugin
+  BetaflightPlugin
   ParachutePlugin
   CameraZoomPlugin
   GstCameraPlugin
